@@ -2,110 +2,106 @@
 //  AppAttestView.swift
 //  AppAttestDemo
 //
-//  Created by David Bench on 10/24/25.
+//  Updated to include Secure API verification
 //
 
 import SwiftUI
-import DeviceCheck
 
 struct AppAttestView: View {
-    @State private var status: String = "Ready"
-    @State private var token: String?
-    @State private var keyId: String?
-    @State private var isProcessing = false
-    @State private var showSettings = false
-    private let client = AppAttestClient()
+    @StateObject private var client = AppAttestClient.shared
+    @State private var isLoading = false
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 20) {
-                Text("🔐 App Attest Demo").font(.title2).bold()
-                Text(status).multilineTextAlignment(.center).font(.footnote).foregroundStyle(.secondary)
+        NavigationView {
+            VStack(spacing: 24) {
+                Text("🔒 Apple App Attest Demo")
+                    .font(.title2)
+                    .bold()
 
-                if let token {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("JWT").font(.caption).foregroundStyle(.secondary)
-                        ScrollView {
-                            Text(token).textSelection(.enabled).font(.caption.monospaced())
-                        }
-                        .frame(maxHeight: 120)
-                        .padding(8)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                    }
-                }
-
-                if isProcessing { ProgressView().padding(.bottom, 4) }
-
-                HStack {
-                    Button("Run Attestation") { Task { await runAttestation() } }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(isProcessing)
-
-                    Button("Generate Assertion") { Task { await runAssertion() } }
-                        .buttonStyle(.bordered)
-                        .disabled(isProcessing || token == nil)
-                }
-
-                Spacer()
-
-                Text(currentBaseURL)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Text(client.statusMessage)
+                    .font(.body)
+                    .foregroundColor(.gray)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
+
+                if let jwt = client.jwtToken {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("✅ Verified successfully")
+                                .font(.headline)
+                            Text("JWT Token:")
+                                .font(.subheadline)
+                            Text(jwt)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        .padding()
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(12)
+                        .padding(.horizontal)
+                    }
+
+                    // --- Secure API button ---
+                    Button {
+                        Task {
+                            await verifySecureAPI()
+                        }
+                    } label: {
+                        Label("Verify Secure API", systemImage: "lock.shield.fill")
+                            .font(.headline)
+                            .padding()
+                            .frame(maxWidth: .infinity)
+                            .background(Color.green)
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                    }
+                    .disabled(isLoading)
+                    .padding(.horizontal)
+                }
+
+                if isLoading {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle())
+                }
+
+                Button {
+                    Task {
+                        await runAttestation()
+                    }
+                } label: {
+                    Label("Run App Attest", systemImage: "key.fill")
+                        .font(.headline)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                .disabled(isLoading)
+                .padding(.horizontal)
             }
             .padding()
             .navigationTitle("App Attest")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
-                }
-            }
-            .sheet(isPresented: $showSettings) {
-                SettingsView()
-            }
+        }
+        .task {
+            await client.initializeIfNeeded()
         }
     }
 
-    private var currentBaseURL: String {
-        let url = UserDefaults.standard.string(forKey: "baseURL") ?? ""
-        return url.isEmpty ? "(no base URL set)" : "Base URL: " + url
-    }
-
+    // MARK: - Run Attestation
     private func runAttestation() async {
-        isProcessing = true; defer { isProcessing = false }
-        do {
-            status = "Requesting challenge…"
-            let challenge = try await client.fetchChallenge()
-            status = "Generating attestation…"
-            let (keyId, att) = try await client.generateAttestation(challenge: challenge)
-            self.keyId = keyId
-            status = "Sending attestation…"
-            let jwt = try await client.sendAttestation(keyId, att, challenge: challenge)
-            self.token = jwt
-            status = "✅ Attestation verified. JWT issued."
-        } catch {
-            status = "❌ " + (error.localizedDescription)
-        }
+        isLoading = true
+        defer { isLoading = false }
+
+        await client.runFullAttestationFlow()
     }
 
-    private func runAssertion() async {
-        guard let keyId, let token else { return }
-        isProcessing = true; defer { isProcessing = false }
-        do {
-            status = "Fetching new challenge…"
-            let challenge = try await client.fetchChallenge()
-            status = "Generating assertion…"
-            let assertion = try await client.generateAssertion(challenge: challenge)
-            status = "Sending assertion…"
-            try await client.sendAssertion(assertion, keyId: keyId, jwt: token, challenge: challenge)
-            status = "✅ Assertion verified."
-        } catch {
-            status = "❌ " + (error.localizedDescription)
-        }
-    }
-}
+    // MARK: - Verify Secure API
+    private func verifySecureAPI() async {
+        isLoading = true
+        defer { isLoading = false }
 
-#Preview {
-    AppAttestView()
+        await client.callSecureEndpoint()
+    }
 }

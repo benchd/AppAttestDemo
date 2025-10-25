@@ -6,8 +6,7 @@
 //
 
 struct AttestResponse: Codable {
-    let status: String
-    let verified: Bool
-    let message: String
+    let jwt: String
+    let success: Bool
 }
 
