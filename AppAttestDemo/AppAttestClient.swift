@@ -108,8 +108,35 @@ final class AppAttestClient: ObservableObject {
     // MARK: - Step 1: Fetch challenge
     func fetchChallenge() async throws -> String {
         let url = serverBaseURL.appendingPathComponent("challenge")
-        let (data, response) = try await URLSession.shared.data(from: url)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+        
+        // Create a custom URLSession configuration that doesn't follow redirects
+        let config = URLSessionConfiguration.default
+        let session = URLSession(configuration: config)
+        
+        let (data, response) = try await session.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "AppAttest", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        
+        // Handle redirect manually - if we get a 307, try the original port 6012 directly
+        if httpResponse.statusCode == 307 {
+            print("Received redirect, trying direct connection to port 6012...")
+            // Try the challenge endpoint directly on port 6012 without redirect
+            let directURL = URL(string: "https://ss.myprohelper.com:6012/api/auth/challenge")!
+            let (directData, directResponse) = try await session.data(from: directURL)
+            guard let directHttpResponse = directResponse as? HTTPURLResponse, directHttpResponse.statusCode == 200 else {
+                throw NSError(domain: "AppAttest", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response after redirect handling"])
+            }
+            
+            let challengeResponse = try JSONDecoder().decode([String: String].self, from: directData)
+            guard let challenge = challengeResponse["challenge"] else {
+                throw NSError(domain: "AppAttest", code: -2, userInfo: [NSLocalizedDescriptionKey: "Missing challenge"])
+            }
+            print("Fetched challenge: \(challenge)")
+            return challenge
+        }
+        
+        guard httpResponse.statusCode == 200 else {
             throw NSError(domain: "AppAttest", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
 
