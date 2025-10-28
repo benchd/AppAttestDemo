@@ -13,7 +13,8 @@ struct AppAttestView: View {
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 24) {
+            ScrollView {
+                VStack(spacing: 24) {
                 Text("🔒 Apple App Attest Demo")
                     .font(.title2)
                     .bold()
@@ -58,6 +59,23 @@ struct AppAttestView: View {
                     }
                     .disabled(isLoading)
                     .padding(.horizontal)
+                    
+                    // --- Smart Secure Request button ---
+                    Button {
+                        Task {
+                            await smartSecureRequest()
+                        }
+                    } label: {
+                        Label("Send Secure Request", systemImage: "arrow.clockwise.circle.fill")
+                            .font(.headline)
+                            .padding()
+                            .frame(maxWidth: .infinity)
+                            .background(Color.purple)
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                    }
+                    .disabled(isLoading)
+                    .padding(.horizontal)
                 }
 
                 if isLoading {
@@ -80,8 +98,38 @@ struct AppAttestView: View {
                 }
                 .disabled(isLoading)
                 .padding(.horizontal)
+                
+                // --- Smart Secure Request button (always visible) ---
+                Button {
+                    Task {
+                        await smartSecureRequest()
+                    }
+                } label: {
+                    Label("Send Secure Request", systemImage: "arrow.clockwise.circle.fill")
+                        .font(.headline)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.purple)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                .disabled(isLoading)
+                .padding(.horizontal)
+                
+                // --- Sign Up Without Device Code button ---
+                NavigationLink(destination: SignUpView()) {
+                    Label("Sign Up Without Device Code", systemImage: "person.badge.plus")
+                        .font(.headline)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.orange)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                .padding(.horizontal)
+                }
+                .padding()
             }
-            .padding()
             .navigationTitle("App Attest")
         }
         .task {
@@ -103,5 +151,13 @@ struct AppAttestView: View {
         defer { isLoading = false }
 
         await client.callSecureEndpoint()
+    }
+    
+    // MARK: - Smart Secure Request
+    private func smartSecureRequest() async {
+        isLoading = true
+        defer { isLoading = false }
+
+        await client.smartSecureRequest()
     }
 }
