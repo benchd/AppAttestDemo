@@ -24,6 +24,8 @@ final class AppAttestClient: ObservableObject {
     @Published var statusMessage: String = ""
     @Published var jwtToken: String? = nil
     @Published var isAttested: Bool = false
+    @Published var lastValidPhoneNumberCodeGuid: String? = nil
+    @Published var lastValidEmailCodeGuid: String? = nil
 
     private let service = DCAppAttestService.shared
     private let serverBaseURL = URL(string: unifiedAttestEndpoint)!
@@ -151,6 +153,8 @@ final class AppAttestClient: ObservableObject {
             do {
                 let response = try JSONDecoder().decode(AppStoreSignUpValidatePhoneNumberCodeResponse.self, from: data)
                 print("✅ Code validation success: \(response)")
+                // Save for downstream email validation step
+                self.lastValidPhoneNumberCodeGuid = response.validPhoneNumberCodeGuid
                 return response
             } catch {
                 print("❌ Code validation decode error: \(error)")
@@ -170,6 +174,158 @@ final class AppAttestClient: ObservableObject {
             } else {
                 throw NSError(domain: "AppAttest", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorText])
             }
+        }
+    }
+
+    // MARK: - Email Validation
+    func issueOrValidateEmail(
+        validPhoneNumberCodeGuid: String,
+        email: String,
+        validationCode: String
+    ) async throws -> AppStoreSignUpValidateEmailResponse {
+        // Ensure JWT
+        if jwtToken == nil {
+            statusMessage = "No JWT token - getting new one... (\(currentTimestamp()))"
+            await runFullAttestationFlow()
+            guard jwtToken != nil else {
+                throw NSError(domain: "AppAttest", code: -100, userInfo: [NSLocalizedDescriptionKey: "Failed to get JWT token for email validation"])
+            }
+        }
+        guard let jwt = jwtToken else {
+            throw NSError(domain: "AppAttest", code: -100, userInfo: [NSLocalizedDescriptionKey: "No JWT token available"])
+        }
+
+        let url = URL(string: "\(Self.baseServerURL)/ga/SecureData/IssueValidateEmail")!
+        let requestBody = AppStoreSignUpValidateEmailRequest(
+            validPhoneNumberCodeGuid: validPhoneNumberCodeGuid,
+            email: email,
+            validationCode: validationCode
+        )
+
+        print("📧 Email validation request URL: \(url)")
+        print("📧 Email request data: \(requestBody)")
+        print("📧 JWT token: \(jwt.prefix(20))...")
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "PUT"
+        urlRequest.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder().encode(requestBody)
+
+        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        print("📧 Email validation response: Status \(httpResponse.statusCode)")
+        if httpResponse.statusCode == 200 {
+            do {
+                let decoded = try JSONDecoder().decode(AppStoreSignUpValidateEmailResponse.self, from: data)
+                print("✅ Email step response: \(decoded)")
+                // Save email code GUID for final signup
+                if decoded.isValidEmail {
+                    self.lastValidEmailCodeGuid = decoded.emailGuid
+                }
+                return decoded
+            } catch {
+                print("❌ Email step decode error: \(error)")
+                print("❌ Raw: \(String(data: data, encoding: .utf8) ?? "<nil>")")
+                throw NSError(domain: "AppAttest", code: -102, userInfo: [NSLocalizedDescriptionKey: "Failed to decode response: \(error.localizedDescription)"])
+            }
+        } else {
+            let text = String(data: data, encoding: .utf8) ?? "Unknown error"
+            print("❌ Email step server error: \(httpResponse.statusCode)")
+            print("❌ Email step error response: \(text)")
+            throw NSError(domain: "AppAttest", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
+        }
+    }
+    
+    // MARK: - Create Sign Up Details
+    func createSignUpDetails(
+        firstName: String,
+        lastName: String,
+        companyName: String,
+        addressLine1: String,
+        addressLine2: String,
+        city: String,
+        state: String,
+        zipCode: String
+    ) async throws {
+        // Ensure JWT
+        if jwtToken == nil {
+            statusMessage = "No JWT token - getting new one... (\(currentTimestamp()))"
+            await runFullAttestationFlow()
+            guard jwtToken != nil else {
+                throw NSError(domain: "AppAttest", code: -100, userInfo: [NSLocalizedDescriptionKey: "Failed to get JWT token for signup creation"])
+            }
+        }
+        guard let jwt = jwtToken else {
+            throw NSError(domain: "AppAttest", code: -100, userInfo: [NSLocalizedDescriptionKey: "No JWT token available"])
+        }
+        
+        guard let phoneGuid = lastValidPhoneNumberCodeGuid,
+              let emailGuid = lastValidEmailCodeGuid else {
+            throw NSError(domain: "AppAttest", code: -103, userInfo: [NSLocalizedDescriptionKey: "Missing phone or email validation GUIDs"])
+        }
+        
+        let url = URL(string: "\(Self.baseServerURL)/ga/SecureData/SignUpCreate")!
+        let requestBody = AppStoreSignUpCreateDetails(
+            firstName: firstName,
+            lastName: lastName,
+            companyName: companyName,
+            addressLine1: addressLine1,
+            addressLine2: addressLine2,
+            city: city,
+            state: state,
+            zipCode: zipCode,
+            validPhoneNumberCodeGuid: phoneGuid,
+            validEmailCodeGuid: emailGuid
+        )
+        
+        print("📝 SignUp create request URL: \(url)")
+        print("📝 SignUp create request data: \(requestBody)")
+        print("📝 JWT token: \(jwt.prefix(20))...")
+        
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "PUT"
+        urlRequest.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder().encode(requestBody)
+        
+        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        
+        print("📝 SignUp create response: Status \(httpResponse.statusCode)")
+        if httpResponse.statusCode == 200 {
+            print("✅ SignUp create successful")
+        } else if httpResponse.statusCode == 401 {
+            // JWT expired - get a new one and retry
+            statusMessage = "JWT expired - getting new token and retrying signup... (\(currentTimestamp()))"
+            jwtToken = nil // Clear expired token
+            await runFullAttestationFlow()
+            
+            if jwtToken != nil {
+                statusMessage = "Retrying signup with new JWT... (\(currentTimestamp()))"
+                // Recursive retry with new JWT
+                try await createSignUpDetails(
+                    firstName: firstName,
+                    lastName: lastName,
+                    companyName: companyName,
+                    addressLine1: addressLine1,
+                    addressLine2: addressLine2,
+                    city: city,
+                    state: state,
+                    zipCode: zipCode
+                )
+            } else {
+                throw NSError(domain: "AppAttest", code: -100, userInfo: [NSLocalizedDescriptionKey: "Failed to get new JWT token for signup retry"])
+            }
+        } else {
+            let text = String(data: data, encoding: .utf8) ?? "Unknown error"
+            print("❌ SignUp create server error: \(httpResponse.statusCode)")
+            print("❌ SignUp create error response: \(text)")
+            throw NSError(domain: "AppAttest", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
         }
     }
 

@@ -14,7 +14,7 @@ struct SignUpView: View {
     @State private var phoneNumber = ""
     @State private var validationCode = ""
     @State private var phoneNumberGuid = ""
-    @State private var currentStep = 1 // 1: Personal Info, 2: Phone Validation, 3: Email Validation, 4: Complete
+    @State private var currentStep = 1 // 1: Personal Info, 2: Phone Validation, 3: Email Validation, 4: Company Details, 5: Complete
     @State private var showingErrorAlert = false
     @State private var errorMessage = ""
     @State private var isLoading = false
@@ -24,7 +24,7 @@ struct SignUpView: View {
         NavigationView {
             VStack(spacing: 0) {
                 // Progress indicator
-                ProgressView(value: Double(currentStep), total: 4)
+                ProgressView(value: Double(currentStep), total: 5)
                     .progressViewStyle(LinearProgressViewStyle())
                     .padding()
                 
@@ -32,7 +32,7 @@ struct SignUpView: View {
                     LazyVStack(spacing: 16) {
                         // Step indicator
                         HStack {
-                            ForEach(1...4, id: \.self) { step in
+                            ForEach(1...5, id: \.self) { step in
                                 Circle()
                                     .fill(step <= currentStep ? Color.blue : Color.gray)
                                     .frame(width: 30, height: 30)
@@ -43,7 +43,7 @@ struct SignUpView: View {
                                             .bold()
                                     )
                                 
-                                if step < 4 {
+                                if step < 5 {
                                     Rectangle()
                                         .fill(step < currentStep ? Color.blue : Color.gray)
                                         .frame(height: 2)
@@ -63,6 +63,8 @@ struct SignUpView: View {
                             case 3:
                                 emailValidationStep
                             case 4:
+                                companyDetailsStep
+                            case 5:
                                 completionStep
                             default:
                                 personalInfoStep
@@ -212,21 +214,24 @@ struct SignUpView: View {
     }
     
     private var emailValidationStep: some View {
-        VStack(spacing: 24) {
-            Text("Email Verification")
-                .font(.title2)
-                .bold()
-            
-            Text("This step will be implemented next")
-                .font(.body)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-            
-            Button("Skip for Now") {
+        EmailStepView(
+            client: client,
+            validPhoneNumberCodeGuid: client.lastValidPhoneNumberCodeGuid ?? "",
+            onComplete: { _ in
                 currentStep = 4
             }
-            .buttonStyle(.borderedProminent)
-        }
+        )
+    }
+    
+    private var companyDetailsStep: some View {
+        CompanyDetailsStepView(
+            client: client,
+            firstName: firstName,
+            lastName: lastName,
+            onComplete: {
+                currentStep = 5
+            }
+        )
     }
     
     private var completionStep: some View {
@@ -328,5 +333,271 @@ struct SignUpView: View {
         validationCode = ""
         phoneNumberGuid = ""
         currentStep = 1
+    }
+}
+
+// MARK: - Email Step View
+private struct EmailStepView: View {
+    @ObservedObject var client: AppAttestClient
+    let validPhoneNumberCodeGuid: String
+    var onComplete: (AppStoreSignUpValidateEmailResponse) -> Void
+
+    @State private var email: String = ""
+    @State private var emailCode: String = ""
+    @State private var isLoading: Bool = false
+    @State private var message: String = ""
+    @State private var hasSentCode: Bool = false
+    @State private var showChangeEmailSheet: Bool = false
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Email Verification")
+                .font(.title2)
+                .bold()
+
+            if !hasSentCode {
+                // Step A: Enter email and send code
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Email Address", text: $email)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                    if !email.isEmpty && !isValidEmail(email) {
+                        Text("Please enter a valid email address")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                }
+
+                Button("Send Code") {
+                    Task { await sendOrResendCode() }
+                }
+                .disabled(!isValidEmail(email) || isLoading)
+                .buttonStyle(.borderedProminent)
+            } else {
+                // Step B: Enter code, then verify, then change/resend options
+                VStack(spacing: 8) {
+                    Text("Code sent to \(email)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+
+                    TextField("Enter verification code", text: $emailCode)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.center)
+                        .onChange(of: emailCode) { newValue in
+                            emailCode = String(newValue.filter { $0.isNumber }.prefix(10))
+                        }
+
+                    Button("Verify Email") { Task { await verifyCode() } }
+                        .disabled(emailCode.isEmpty || isLoading)
+                        .buttonStyle(.borderedProminent)
+
+                    HStack(spacing: 12) {
+                        Button("Change Email") { showChangeEmailSheet = true }
+                        Button("Resend Code") { Task { await sendOrResendCode() } }
+                            .disabled(isLoading)
+                        Spacer()
+                    }
+                }
+            }
+
+            if isLoading { ProgressView() }
+
+            if !message.isEmpty {
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .sheet(isPresented: $showChangeEmailSheet) {
+            NavigationView {
+                VStack(spacing: 16) {
+                    TextField("Email Address", text: $email)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .padding()
+                    Spacer()
+                }
+                .navigationTitle("Change Email")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showChangeEmailSheet = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") { showChangeEmailSheet = false }
+                            .disabled(!isValidEmail(email))
+                    }
+                }
+            }
+        }
+    }
+
+    private func sendOrResendCode() async {
+        guard isValidEmail(email) else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let resp = try await client.issueOrValidateEmail(
+                validPhoneNumberCodeGuid: validPhoneNumberCodeGuid,
+                email: email,
+                validationCode: ""
+            )
+            hasSentCode = true
+            message = resp.isValidEmail ? "Email already validated" : "We sent a code to \(email)."
+            if resp.isValidEmail { onComplete(resp) }
+        } catch {
+            message = "Failed to send email code: \(error.localizedDescription)"
+        }
+    }
+
+    private func verifyCode() async {
+        guard !emailCode.isEmpty else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let resp = try await client.issueOrValidateEmail(
+                validPhoneNumberCodeGuid: validPhoneNumberCodeGuid,
+                email: email,
+                validationCode: emailCode
+            )
+            if resp.isValidEmail {
+                onComplete(resp)
+            } else {
+                message = "Invalid code. Please try again."
+            }
+        } catch {
+            message = "Failed to validate email: \(error.localizedDescription)"
+        }
+    }
+
+    private func isValidEmail(_ email: String) -> Bool {
+        // Simple RFC 5322-ish check
+        let pattern = "^[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}$"
+        return email.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+}
+
+// MARK: - Company Details Step View
+private struct CompanyDetailsStepView: View {
+    @ObservedObject var client: AppAttestClient
+    let firstName: String
+    let lastName: String
+    var onComplete: () -> Void
+    
+    @State private var companyName: String = ""
+    @State private var addressLine1: String = ""
+    @State private var addressLine2: String = ""
+    @State private var city: String = ""
+    @State private var selectedState: String = ""
+    @State private var zipCode: String = ""
+    @State private var isLoading: Bool = false
+    @State private var message: String = ""
+    
+    private let states = [
+        "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+        "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+        "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+        "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+        "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"
+    ]
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Company Information")
+                .font(.title2)
+                .bold()
+            
+            VStack(alignment: .leading, spacing: 12) {
+                TextField("Company Name", text: $companyName)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .autocorrectionDisabled()
+                
+                TextField("Address Line 1", text: $addressLine1)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .autocorrectionDisabled()
+                
+                TextField("Address Line 2 (Optional)", text: $addressLine2)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .autocorrectionDisabled()
+                
+                TextField("City", text: $city)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .autocorrectionDisabled()
+                
+                Picker("State", selection: $selectedState) {
+                    Text("Select State").tag("")
+                    ForEach(states, id: \.self) { state in
+                        Text(state).tag(state)
+                    }
+                }
+                .pickerStyle(MenuPickerStyle())
+                
+                TextField("Zip Code", text: $zipCode)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .keyboardType(.numberPad)
+                    .onChange(of: zipCode) { newValue in
+                        zipCode = String(newValue.filter { $0.isNumber }.prefix(5))
+                    }
+            }
+            
+            Button("Complete Sign Up") {
+                Task { await createSignUp() }
+            }
+            .disabled(!canProceed || isLoading)
+            .buttonStyle(.borderedProminent)
+            
+            if isLoading {
+                ProgressView()
+            }
+            
+            if !message.isEmpty {
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+    
+    private var canProceed: Bool {
+        !companyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !addressLine1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !city.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !selectedState.isEmpty &&
+        zipCode.count == 5
+    }
+    
+    private func createSignUp() async {
+        guard canProceed else { return }
+        
+        isLoading = true
+        defer { isLoading = false }
+        
+        do {
+            try await client.createSignUpDetails(
+                firstName: firstName,
+                lastName: lastName,
+                companyName: companyName,
+                addressLine1: addressLine1,
+                addressLine2: addressLine2,
+                city: city,
+                state: selectedState,
+                zipCode: zipCode
+            )
+            message = "Sign up completed successfully!"
+            onComplete()
+        } catch {
+            message = "Failed to complete sign up: \(error.localizedDescription)"
+        }
     }
 }
