@@ -105,3 +105,12 @@ struct AppStoreSignUpCreateDetails: Codable {
         case validEmailCodeGuid = "ValidEmailCodeGuid"
     }
 }
+
+// MARK: - Sign Up Create Details Response
+struct AppStoreSignUpCreateDetailsResponse: Codable {
+    let deviceCode: String
+
+    enum CodingKeys: String, CodingKey {
+        case deviceCode = "deviceCode"
+    }
+}

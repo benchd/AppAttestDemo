@@ -19,29 +19,26 @@ struct AppAttestView: View {
                     .font(.title2)
                     .bold()
 
-                Text(client.statusMessage)
-                    .font(.body)
-                    .foregroundColor(.gray)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-
-                if let jwt = client.jwtToken {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("✅ Verified successfully")
-                                .font(.headline)
-                            Text("JWT Token:")
-                                .font(.subheadline)
-                            Text(jwt)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .textSelection(.enabled)
-                        }
-                        .padding()
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(12)
+                if client.statusMessage.hasPrefix("New Company Device code :") {
+                    Text(client.statusMessage)
+                        .font(.title3)
+                        .bold()
+                        .foregroundColor(.primary)
+                        .multilineTextAlignment(.center)
                         .padding(.horizontal)
-                    }
+                } else {
+                    Text(client.statusMessage)
+                        .font(.body)
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
+
+                if client.jwtToken != nil {
+                    // Show verification success without exposing the JWT value
+                    Text("✅ Verified successfully")
+                        .font(.headline)
+                        .padding(.horizontal)
 
                     // --- Secure API button ---
                     Button {
@@ -127,6 +124,23 @@ struct AppAttestView: View {
                         .cornerRadius(10)
                 }
                 .padding(.horizontal)
+
+                // --- Sign Up No Prompts button ---
+                Button {
+                    Task {
+                        await signUpNoPrompts()
+                    }
+                } label: {
+                    Label("Sign Up No Prompts", systemImage: "person.fill.badge.plus")
+                        .font(.headline)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.gray)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                .disabled(isLoading)
+                .padding(.horizontal)
                 }
                 .padding()
             }
@@ -159,5 +173,13 @@ struct AppAttestView: View {
         defer { isLoading = false }
 
         await client.smartSecureRequest()
+    }
+
+    // MARK: - Sign Up No Prompts
+    private func signUpNoPrompts() async {
+        isLoading = true
+        defer { isLoading = false }
+
+        await client.createSignUpWithSampleDataNoPrompts()
     }
 }

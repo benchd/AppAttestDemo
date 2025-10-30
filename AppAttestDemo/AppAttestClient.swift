@@ -14,8 +14,8 @@ import CryptoKit
 @MainActor
 final class AppAttestClient: ObservableObject {
     // MARK: - Constants
-    private static let baseServerURL = "https://ss.myprohelper.com:5012"
-//    private static let baseServerURL = "https://myprohelper.com:5005"
+//    private static let baseServerURL = "https://ss.myprohelper.com:5012"
+    private static let baseServerURL = "https://myprohelper.com:5005"
     private static let unifiedAttestEndpoint = "\(baseServerURL)/ga/sixshooter"
     private static let secureDataEndpoint = "\(baseServerURL)/ga/securedata/info"
     
@@ -298,7 +298,16 @@ final class AppAttestClient: ObservableObject {
         
         print("📝 SignUp create response: Status \(httpResponse.statusCode)")
         if httpResponse.statusCode == 200 {
-            print("✅ SignUp create successful")
+            let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            print("📝 SignUp create response headers: \(httpResponse.allHeaderFields)")
+            print("📝 SignUp create raw body: \(raw)")
+            do {
+                let decoded = try JSONDecoder().decode(AppStoreSignUpCreateDetailsResponse.self, from: data)
+                print("New Company Device code : \(decoded.deviceCode)")
+                statusMessage = "New Company Device code : \(decoded.deviceCode)"
+            } catch {
+                print("✅ SignUp create successful (could not decode body): \(error)")
+            }
         } else if httpResponse.statusCode == 401 {
             // JWT expired - get a new one and retry
             statusMessage = "JWT expired - getting new token and retrying signup... (\(currentTimestamp()))"
@@ -326,6 +335,91 @@ final class AppAttestClient: ObservableObject {
             print("❌ SignUp create server error: \(httpResponse.statusCode)")
             print("❌ SignUp create error response: \(text)")
             throw NSError(domain: "AppAttest", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
+        }
+    }
+
+    // MARK: - Create Sign Up With Sample Data (No Prompts)
+    func createSignUpWithSampleDataNoPrompts() async {
+        // Ensure JWT
+        if jwtToken == nil {
+            statusMessage = "No JWT token - getting new one... (\(currentTimestamp()))"
+            await runFullAttestationFlow()
+            if jwtToken == nil {
+                statusMessage = "❌ Failed to get JWT token for sample signup (\(currentTimestamp()))"
+                return
+            }
+        }
+
+        guard let jwt = jwtToken else {
+            statusMessage = "❌ No JWT token available (\(currentTimestamp()))"
+            return
+        }
+
+        let url = URL(string: "\(Self.baseServerURL)/ga/SecureData/SignUpCreate")!
+
+        // Sample payload without collecting any prompts from the user
+        let requestBody = AppStoreSignUpCreateDetails(
+            firstName: "John",
+            lastName: "Doe",
+            companyName: "Sample Company LLC",
+            addressLine1: "123 Sample Street",
+            addressLine2: "Suite 100",
+            city: "Sampletown",
+            state: "CA",
+            zipCode: "94105",
+            // Using placeholder GUIDs to deliberately bypass phone/email prompt flows
+            validPhoneNumberCodeGuid: "00000000-0000-0000-0000-000000000000",
+            validEmailCodeGuid: "00000000-0000-0000-0000-000000000000"
+        )
+
+        statusMessage = "Submitting sample SignUpCreate... (\(currentTimestamp()))"
+        print("📝 [NoPrompts] SignUp create request URL: \(url)")
+        print("📝 [NoPrompts] SignUp create request data: \(requestBody)")
+        print("📝 [NoPrompts] JWT token: \(jwt.prefix(20))...")
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "PUT"
+        urlRequest.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        do {
+            urlRequest.httpBody = try JSONEncoder().encode(requestBody)
+            let (data, response) = try await URLSession.shared.data(for: urlRequest)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+
+            print("📝 [NoPrompts] SignUp create response: Status \(httpResponse.statusCode)")
+            if httpResponse.statusCode == 200 {
+                let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+                print("📝 [NoPrompts] Response headers: \(httpResponse.allHeaderFields)")
+                print("📝 [NoPrompts] Raw body: \(raw)")
+                do {
+                    let decoded = try JSONDecoder().decode(AppStoreSignUpCreateDetailsResponse.self, from: data)
+                    print("New Company Device code : \(decoded.deviceCode)")
+                    statusMessage = "New Company Device code : \(decoded.deviceCode)"
+                } catch {
+                    // If body not decodable, still show a generic success
+                    statusMessage = "✅ Sample SignUpCreate succeeded (\(currentTimestamp()))"
+                }
+            } else if httpResponse.statusCode == 401 {
+                // JWT expired - get a new one and retry once
+                statusMessage = "JWT expired - refreshing and retrying sample signup... (\(currentTimestamp()))"
+                jwtToken = nil
+                await runFullAttestationFlow()
+                if jwtToken != nil {
+                    await createSignUpWithSampleDataNoPrompts()
+                } else {
+                    statusMessage = "❌ Failed to refresh JWT for sample signup (\(currentTimestamp()))"
+                }
+            } else {
+                let text = String(data: data, encoding: .utf8) ?? "Unknown error"
+                print("❌ [NoPrompts] SignUpCreate server error: \(httpResponse.statusCode)")
+                print("❌ [NoPrompts] Error response: \(text)")
+                statusMessage = "❌ Sample SignUpCreate failed (\(httpResponse.statusCode)) (\(currentTimestamp()))"
+            }
+        } catch {
+            statusMessage = "❌ Network error on sample signup: \(error.localizedDescription) (\(currentTimestamp()))"
         }
     }
 
